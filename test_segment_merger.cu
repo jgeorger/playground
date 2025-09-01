@@ -131,7 +131,7 @@ TEST_F(SegmentMergerTest, LargeThreshold) {
 
 TEST_F(SegmentMergerTest, ManySegments) {
     std::vector<Segment> segments;
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < 5000; i++) {
         segments.push_back({i * 3, i * 3 + 1});
     }
     
@@ -139,7 +139,7 @@ TEST_F(SegmentMergerTest, ManySegments) {
     
     // With threshold 2, segments [0,1], [3,4], [6,7], ... should merge into one big segment
     // Gap between consecutive segments is 2 (e.g., 3-1=2), so threshold 2 allows merging
-    std::vector<Segment> expected = {{0, 298}};
+    std::vector<Segment> expected = {{0, 14998}}; // Last segment is [14997, 14998]
     
     
     EXPECT_TRUE(segments_equal(result, expected));
