@@ -1,0 +1,35 @@
+{
+    "version": 3,
+    "configurePresets": [
+        {
+            "name": "debug-local",
+            "displayName": "Local Debug Build",
+            "description": "Local debug build with custom settings",
+            "inherits": "debug",
+            "cacheVariables": {
+                "CMAKE_VERBOSE_MAKEFILE": "ON"
+            }
+        },
+        {
+            "name": "release-local",
+            "displayName": "Local Release Build",
+            "description": "Local release build with custom settings",
+            "inherits": "release",
+            "cacheVariables": {
+                "CMAKE_CUDA_FLAGS_RELEASE": "-O3 -DNDEBUG"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "debug-local",
+            "displayName": "Local Debug Build",
+            "configurePreset": "debug-local"
+        },
+        {
+            "name": "release-local",
+            "displayName": "Local Release Build",
+            "configurePreset": "release-local"
+        }
+    ]
+}
