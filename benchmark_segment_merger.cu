@@ -23,7 +23,7 @@ std::vector<Segment> generate_uniform_segments(int count, int expected_output, i
         expected_output = count; // No merging case
     }
     
-    // Strategy: Create clusters of segments that will merge together
+    // Strategy: Create segments in clusters where each cluster will merge into one segment
     // Each cluster will have (count / expected_output) segments on average
     int segments_per_cluster = std::max(1, count / expected_output);
     int cluster_spread = 100; // Distance between clusters
@@ -32,24 +32,39 @@ std::vector<Segment> generate_uniform_segments(int count, int expected_output, i
     
     int current_pos = 0;
     int segments_created = 0;
+    int clusters_created = 0;
     
     while (segments_created < count) {
-        // Create a cluster
-        int cluster_size = std::min(segments_per_cluster, count - segments_created);
+        // Determine cluster size for this cluster
+        int remaining_segments = count - segments_created;
+        int remaining_clusters = expected_output - clusters_created;
+        int cluster_size;
         
-        for (int i = 0; i < cluster_size; i++) {
+        if (remaining_clusters <= 1) {
+            // Last cluster gets all remaining segments
+            cluster_size = remaining_segments;
+        } else {
+            // Distribute segments evenly among remaining clusters
+            cluster_size = std::max(1, remaining_segments / remaining_clusters);
+        }
+        
+        // Create segments in this cluster
+        for (int i = 0; i < cluster_size && segments_created < count; i++) {
             int start = current_pos;
             int end = start + segment_length;
             segments.push_back({start, end});
             segments_created++;
             
-            if (segments_created < count) {
-                current_pos = end + intra_cluster_gap; // Small gap within cluster
-            }
+            // Move to next segment position within cluster
+            current_pos = end + intra_cluster_gap; // Small gap within cluster
         }
         
+        clusters_created++;
+        
         // Move to next cluster position
-        current_pos += cluster_spread;
+        if (segments_created < count) {
+            current_pos += cluster_spread;
+        }
     }
     
     // Sort segments by start position (requirement of the algorithm)
