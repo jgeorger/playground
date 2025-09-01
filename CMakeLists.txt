@@ -12,6 +12,9 @@ set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 # Set CUDA architecture
 set(CMAKE_CUDA_ARCHITECTURES 61)
 
+# Suppress deprecated GPU target warnings
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Wno-deprecated-gpu-targets")
+
 # Find required packages
 find_package(CUDAToolkit REQUIRED)
 
