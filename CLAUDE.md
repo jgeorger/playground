@@ -19,13 +19,18 @@ cmake --build --preset release
 # Run tests
 ./build/release/test_segment_merger
 
+# Run benchmark (example: 1000 input segments, expect 100 output segments)
+./build/release/benchmark_segment_merger 1000 100
+
 # Clean build artifacts  
 rm -rf build/
 ```
 
 ## Architecture
 - `segment_merger.cu`: Main CUDA implementation for merging line segments
+- `segment_merger.h`: Header file with function declarations
 - `test_segment_merger.cu`: GoogleTest-based unit test suite
+- `benchmark_segment_merger.cu`: Performance benchmark program
 - `CMakeLists.txt`: CMake build configuration
 - `CMakePresets.json`: Common build presets (release/debug)
 - `CMakeUserPresets.json`: User-specific build configurations

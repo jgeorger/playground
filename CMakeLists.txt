@@ -42,6 +42,13 @@ target_link_libraries(test_segment_merger
     CUDA::cudart
 )
 
+# Create benchmark executable
+add_executable(benchmark_segment_merger benchmark_segment_merger.cu)
+target_link_libraries(benchmark_segment_merger 
+    segment_merger_lib
+    CUDA::cudart
+)
+
 # Enable testing
 enable_testing()
 add_test(NAME SegmentMergerTests COMMAND test_segment_merger)
@@ -49,3 +56,4 @@ add_test(NAME SegmentMergerTests COMMAND test_segment_merger)
 # Set CUDA separable compilation for device linking
 set_property(TARGET segment_merger_lib PROPERTY CUDA_SEPARABLE_COMPILATION ON)
 set_property(TARGET test_segment_merger PROPERTY CUDA_SEPARABLE_COMPILATION ON)
+set_property(TARGET benchmark_segment_merger PROPERTY CUDA_SEPARABLE_COMPILATION ON)
