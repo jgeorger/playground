@@ -10,7 +10,7 @@ set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 # Set CUDA architecture
-set(CMAKE_CUDA_ARCHITECTURES 61)
+set(CMAKE_CUDA_ARCHITECTURES 121) # 61) is this my GTX1080
 
 # Suppress deprecated GPU target warnings and add line info for profiling
 set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Wno-deprecated-gpu-targets -lineinfo")
@@ -46,6 +46,11 @@ target_link_libraries(test_segment_merger
 add_executable(benchmark_segment_merger benchmark_segment_merger.cu)
 target_link_libraries(benchmark_segment_merger 
     segment_merger_lib
+    CUDA::cudart
+)
+
+add_executable(find_runs find_runs.cu)
+target_link_libraries(find_runs 
     CUDA::cudart
 )
 
