@@ -50,9 +50,21 @@ target_link_libraries(benchmark_segment_merger
 )
 
 add_executable(find_runs find_runs.cu)
-target_link_libraries(find_runs 
+target_link_libraries(find_runs
     CUDA::cudart
 )
+
+# BPDN (Basis Pursuit Denoise) library and test
+add_library(bpdn_lib bpdn_cuda.cu)
+target_link_libraries(bpdn_lib CUDA::cudart)
+set_property(TARGET bpdn_lib PROPERTY CUDA_SEPARABLE_COMPILATION ON)
+
+add_executable(test_bpdn test_bpdn.cu)
+target_link_libraries(test_bpdn
+    bpdn_lib
+    CUDA::cudart
+)
+set_property(TARGET test_bpdn PROPERTY CUDA_SEPARABLE_COMPILATION ON)
 
 # Enable testing
 enable_testing()
