@@ -114,6 +114,7 @@ cudaError_t solveLinearSystem(
     const cuda::std::complex<float>* d_M,
     cuda::std::complex<float>* d_x,
     int* d_info,
+    int batches,
     cudaStream_t stream
 ) {
     constexpr unsigned NT = 128;
@@ -131,19 +132,19 @@ cudaError_t solveLinearSystem(
         kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size);
     if (err != cudaSuccess) return err;
 
-    kernel<<<1, NT, smem_size, stream>>>(d_D_cast, d_M_cast, d_x_cast, d_info);
+    kernel<<<batches, NT, smem_size, stream>>>(d_D_cast, d_M_cast, d_x_cast, d_info);
     return cudaGetLastError();
 }
 
 // Explicit template instantiations (k >= m required for D*D^H to be positive definite)
 template cudaError_t solveLinearSystem<4, 8>(
     const cuda::std::complex<float>*, const cuda::std::complex<float>*,
-    cuda::std::complex<float>*, int*, cudaStream_t);
+    cuda::std::complex<float>*, int*, int, cudaStream_t);
 template cudaError_t solveLinearSystem<8, 16>(
     const cuda::std::complex<float>*, const cuda::std::complex<float>*,
-    cuda::std::complex<float>*, int*, cudaStream_t);
+    cuda::std::complex<float>*, int*, int, cudaStream_t);
 template cudaError_t solveLinearSystem<16, 32>(
     const cuda::std::complex<float>*, const cuda::std::complex<float>*,
-    cuda::std::complex<float>*, int*, cudaStream_t);
+    cuda::std::complex<float>*, int*, int, cudaStream_t);
 
 } // namespace linsol
