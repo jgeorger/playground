@@ -66,6 +66,37 @@ target_link_libraries(test_bpdn
 )
 set_property(TARGET test_bpdn PROPERTY CUDA_SEPARABLE_COMPILATION ON)
 
+# MathDx linear solve (cuBLASDx + cuSOLVERDx)
+find_package(mathdx REQUIRED CONFIG
+    PATHS "/home/jgeorger/Downloads/nvidia-mathdx-25.12.1-cuda13/nvidia/mathdx/25.12")
+
+add_library(linear_solve_dx_lib linear_solve_dx.cu)
+target_link_libraries(linear_solve_dx_lib CUDA::cudart mathdx::cublasdx mathdx::cusolverdx_fatbin)
+target_compile_options(linear_solve_dx_lib PRIVATE
+    "$<$<COMPILE_LANGUAGE:CUDA>:SHELL:--expt-relaxed-constexpr>"
+    "$<$<COMPILE_LANGUAGE:CUDA>:SHELL:-Xfatbin -compress-all>"
+)
+set_target_properties(linear_solve_dx_lib PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    INTERPROCEDURAL_OPTIMIZATION ON
+)
+
+add_executable(test_linear_solve_dx test_linear_solve_dx.cu)
+target_link_libraries(test_linear_solve_dx
+    linear_solve_dx_lib
+    CUDA::cudart
+    mathdx::cublasdx
+    mathdx::cusolverdx_fatbin
+)
+target_compile_options(test_linear_solve_dx PRIVATE
+    "$<$<COMPILE_LANGUAGE:CUDA>:SHELL:--expt-relaxed-constexpr>"
+    "$<$<COMPILE_LANGUAGE:CUDA>:SHELL:-Xfatbin -compress-all>"
+)
+set_target_properties(test_linear_solve_dx PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+    INTERPROCEDURAL_OPTIMIZATION ON
+)
+
 # Enable testing
 enable_testing()
 add_test(NAME SegmentMergerTests COMMAND test_segment_merger)
