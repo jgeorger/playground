@@ -1,0 +1,7 @@
+# Example sweep parameter file
+# Each key lists comma-separated values; all combinations are tested.
+batch:   100, 1000
+n:       8, 16
+m:       8, 16
+k:       8, 16
+overlap: 0.0, 1.0
