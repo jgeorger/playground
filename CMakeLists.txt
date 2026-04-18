@@ -54,6 +54,14 @@ target_link_libraries(find_runs
     CUDA::cudart
 )
 
+# CGEMM batched benchmark
+add_executable(benchmark_cgemm benchmark_cgemm.cu)
+target_link_libraries(benchmark_cgemm
+    CUDA::cudart
+    CUDA::cublas
+    CUDA::cublasLt
+)
+
 # BPDN (Basis Pursuit Denoise) library and test
 add_library(bpdn_lib bpdn_cuda.cu)
 target_link_libraries(bpdn_lib CUDA::cudart)
