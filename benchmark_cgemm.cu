@@ -52,6 +52,7 @@ struct BenchContext {
     cuComplex beta;
     FILE* outFile;
     bool verify;
+    bool verbose;
 };
 
 static void timer_begin(BenchContext& ctx) {
@@ -73,8 +74,10 @@ static void emit_csv(BenchContext& ctx, int batchSize, int n, int m, int k,
     char line[160];
     int len = std::snprintf(line, sizeof(line), "%d,%d,%d,%d,%.2f,%s,%.3f\n",
                             batchSize, n, m, k, overlap, method, ms);
-    std::fwrite(line, 1, len, stdout);
-    std::fflush(stdout);
+    if (ctx.verbose) {
+        std::fwrite(line, 1, len, stdout);
+        std::fflush(stdout);
+    }
     if (ctx.outFile) {
         std::fwrite(line, 1, len, ctx.outFile);
         std::fflush(ctx.outFile);
@@ -83,8 +86,10 @@ static void emit_csv(BenchContext& ctx, int batchSize, int n, int m, int k,
 
 static void emit_header(BenchContext& ctx) {
     const char* hdr = "batchSize,n,m,k,overlap,method,latency_ms\n";
-    std::fputs(hdr, stdout);
-    std::fflush(stdout);
+    if (ctx.verbose) {
+        std::fputs(hdr, stdout);
+        std::fflush(stdout);
+    }
     if (ctx.outFile) {
         std::fputs(hdr, ctx.outFile);
         std::fflush(ctx.outFile);
@@ -579,6 +584,7 @@ static void print_usage(const char* prog) {
                  "                   Final file: <base>_YYYYMMDD_HHMMSS_<gpu>.csv\n"
                  "  --verify         Compare each method's output against cublasCgemmStridedBatched\n"
                  "                   (reports max absolute and relative error per point).\n"
+                 "  --verbose, -v    Also print CSV lines to stdout (default: file only).\n"
                  "\n"
                  "Sweep file format (one key per line):\n"
                  "  batch:   100, 1000, 10000\n"
@@ -593,6 +599,7 @@ int main(int argc, char** argv) {
     std::string sweep_path;
     std::string out_base = "cgemm_benchmark";
     bool verify = false;
+    bool verbose = false;
     std::vector<std::string> positional;
 
     for (int i = 1; i < argc; ++i) {
@@ -603,6 +610,8 @@ int main(int argc, char** argv) {
             out_base = argv[++i];
         } else if (a == "--verify") {
             verify = true;
+        } else if (a == "--verbose" || a == "-v") {
+            verbose = true;
         } else if (a == "-h" || a == "--help") {
             print_usage(argv[0]);
             return 0;
@@ -661,6 +670,7 @@ int main(int argc, char** argv) {
     ctx.beta = make_cuFloatComplex(0.0f, 0.0f);
     ctx.outFile = outFile;
     ctx.verify = verify;
+    ctx.verbose = verbose;
 
     emit_header(ctx);
 
