@@ -290,17 +290,21 @@ static void run_point(BenchContext& ctx, int batchSize, int n, int m, int k,
     if (strideA < 1) strideA = 1;
     if (strideB < 1) strideB = 1;
 
+    long long strideD = (long long)n * n;  // A * A^H result is n x n per batch
+
     long long sizeA = strideA * (long long)(batchSize - 1) + matA;
     long long sizeB = strideB * (long long)(batchSize - 1) + matB;
     long long sizeC = strideC * (long long)batchSize;
+    long long sizeD = strideD * (long long)batchSize;
 
     std::fprintf(stderr,
                  "Point: batchSize=%d n=%d m=%d k=%d overlap=%.4f | "
-                 "strideA=%lld strideB=%lld | mem A=%.2f B=%.2f C=%.2f MB\n",
+                 "strideA=%lld strideB=%lld | mem A=%.2f B=%.2f C=%.2f D=%.2f MB\n",
                  batchSize, n, m, k, overlap, strideA, strideB,
                  (double)(sizeA * sizeof(cuComplex)) / (1024.0 * 1024.0),
                  (double)(sizeB * sizeof(cuComplex)) / (1024.0 * 1024.0),
-                 (double)(sizeC * sizeof(cuComplex)) / (1024.0 * 1024.0));
+                 (double)(sizeC * sizeof(cuComplex)) / (1024.0 * 1024.0),
+                 (double)(sizeD * sizeof(cuComplex)) / (1024.0 * 1024.0));
 
     std::mt19937 rng(42);
     std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
@@ -308,13 +312,15 @@ static void run_point(BenchContext& ctx, int batchSize, int n, int m, int k,
     for (long long i = 0; i < sizeA; ++i) h_A[i] = make_cuFloatComplex(dist(rng), dist(rng));
     for (long long i = 0; i < sizeB; ++i) h_B[i] = make_cuFloatComplex(dist(rng), dist(rng));
 
-    cuComplex *d_A = nullptr, *d_B = nullptr, *d_C = nullptr;
+    cuComplex *d_A = nullptr, *d_B = nullptr, *d_C = nullptr, *d_D = nullptr;
     CHECK_CUDA(cudaMalloc(&d_A, sizeA * sizeof(cuComplex)));
     CHECK_CUDA(cudaMalloc(&d_B, sizeB * sizeof(cuComplex)));
     CHECK_CUDA(cudaMalloc(&d_C, sizeC * sizeof(cuComplex)));
+    CHECK_CUDA(cudaMalloc(&d_D, sizeD * sizeof(cuComplex)));
     CHECK_CUDA(cudaMemcpy(d_A, h_A.data(), sizeA * sizeof(cuComplex), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(d_B, h_B.data(), sizeB * sizeof(cuComplex), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemset(d_C, 0, sizeC * sizeof(cuComplex)));
+    CHECK_CUDA(cudaMemset(d_D, 0, sizeD * sizeof(cuComplex)));
 
     if (ctx.verify) {
         verify_methods(ctx, batchSize, n, m, k, d_A, d_B, d_C,
@@ -331,6 +337,12 @@ static void run_point(BenchContext& ctx, int batchSize, int n, int m, int k,
         timer_begin(ctx);
         for (int b = 0; b < batchSize; ++b) {
             CHECK_CUBLAS(cublasSetStream(ctx.handle, ctx.streams[b % numStreams]));
+            CHECK_CUBLAS(cublasCgemm(ctx.handle, CUBLAS_OP_N, CUBLAS_OP_C, n, n, k,
+                                     &alpha,
+                                     d_A + b * strideA, n,
+                                     d_A + b * strideA, n,
+                                     &beta,
+                                     d_D + b * strideD, n));
             CHECK_CUBLAS(cublasCgemm(ctx.handle, CUBLAS_OP_N, CUBLAS_OP_N, n, m, k,
                                      &alpha,
                                      d_A + b * strideA, n,
@@ -361,6 +373,12 @@ static void run_point(BenchContext& ctx, int batchSize, int n, int m, int k,
                 timer_begin(ctx);
                 for (int b = 0; b < batchSize; ++b) {
                     CHECK_CUBLAS(cublasSetStream(ctx.handle, ctx.streams[b % numStreams]));
+                    CHECK_CUBLAS(cublasCgemm3m(ctx.handle, CUBLAS_OP_N, CUBLAS_OP_C,
+                                               n, n, k, &alpha,
+                                               d_A + b * strideA, n,
+                                               d_A + b * strideA, n,
+                                               &beta,
+                                               d_D + b * strideD, n));
                     CHECK_CUBLAS(cublasCgemm3m(ctx.handle, CUBLAS_OP_N, CUBLAS_OP_N,
                                                n, m, k, &alpha,
                                                d_A + b * strideA, n,
@@ -378,6 +396,13 @@ static void run_point(BenchContext& ctx, int batchSize, int n, int m, int k,
     // Method 3: cublasCgemmStridedBatched
     for (int iter = 0; iter < NUM_ITERS; ++iter) {
         timer_begin(ctx);
+        CHECK_CUBLAS(cublasCgemmStridedBatched(ctx.handle, CUBLAS_OP_N, CUBLAS_OP_C,
+                                               n, n, k, &alpha,
+                                               d_A, n, strideA,
+                                               d_A, n, strideA,
+                                               &beta,
+                                               d_D, n, strideD,
+                                               batchSize));
         CHECK_CUBLAS(cublasCgemmStridedBatched(ctx.handle, CUBLAS_OP_N, CUBLAS_OP_N,
                                                n, m, k, &alpha,
                                                d_A, n, strideA,
@@ -404,6 +429,10 @@ static void run_point(BenchContext& ctx, int batchSize, int n, int m, int k,
             for (int iter = 0; iter < NUM_ITERS; ++iter) {
                 timer_begin(ctx);
                 CHECK_CUBLAS(cublasCgemm3mStridedBatched(
+                    ctx.handle, CUBLAS_OP_N, CUBLAS_OP_C, n, n, k, &alpha,
+                    d_A, n, strideA, d_A, n, strideA, &beta,
+                    d_D, n, strideD, batchSize));
+                CHECK_CUBLAS(cublasCgemm3mStridedBatched(
                     ctx.handle, CUBLAS_OP_N, CUBLAS_OP_N, n, m, k, &alpha,
                     d_A, n, strideA, d_B, k, strideB, &beta,
                     d_C, n, strideC, batchSize));
@@ -417,6 +446,16 @@ static void run_point(BenchContext& ctx, int batchSize, int n, int m, int k,
     // Method 5: cublasGemmStridedBatchedEx
     for (int iter = 0; iter < NUM_ITERS; ++iter) {
         timer_begin(ctx);
+        CHECK_CUBLAS(cublasGemmStridedBatchedEx(
+            ctx.handle, CUBLAS_OP_N, CUBLAS_OP_C, n, n, k,
+            &alpha,
+            d_A, CUDA_C_32F, n, strideA,
+            d_A, CUDA_C_32F, n, strideA,
+            &beta,
+            d_D, CUDA_C_32F, n, strideD,
+            batchSize,
+            CUBLAS_COMPUTE_32F,
+            CUBLAS_GEMM_DEFAULT));
         CHECK_CUBLAS(cublasGemmStridedBatchedEx(
             ctx.handle, CUBLAS_OP_N, CUBLAS_OP_N, n, m, k,
             &alpha,
@@ -434,21 +473,26 @@ static void run_point(BenchContext& ctx, int batchSize, int n, int m, int k,
 
     // Method 6: cublasLtMatmul (per-point matmul desc and layouts)
     {
-        cublasLtMatmulDesc_t matmulDesc;
-        CHECK_CUBLAS(cublasLtMatmulDescCreate(&matmulDesc, CUBLAS_COMPUTE_32F, CUDA_C_32F));
-        cublasOperation_t opN = CUBLAS_OP_N;
-        CHECK_CUBLAS(cublasLtMatmulDescSetAttribute(matmulDesc, CUBLASLT_MATMUL_DESC_TRANSA,
-                                                    &opN, sizeof(opN)));
-        CHECK_CUBLAS(cublasLtMatmulDescSetAttribute(matmulDesc, CUBLASLT_MATMUL_DESC_TRANSB,
-                                                    &opN, sizeof(opN)));
+        cublasOperation_t opN = CUBLAS_OP_N, opC = CUBLAS_OP_C;
 
-        cublasLtMatrixLayout_t layoutA, layoutB, layoutC;
+        cublasLtMatmulDesc_t descAB;  // N, N (for A * B)
+        CHECK_CUBLAS(cublasLtMatmulDescCreate(&descAB, CUBLAS_COMPUTE_32F, CUDA_C_32F));
+        CHECK_CUBLAS(cublasLtMatmulDescSetAttribute(descAB, CUBLASLT_MATMUL_DESC_TRANSA, &opN, sizeof(opN)));
+        CHECK_CUBLAS(cublasLtMatmulDescSetAttribute(descAB, CUBLASLT_MATMUL_DESC_TRANSB, &opN, sizeof(opN)));
+
+        cublasLtMatmulDesc_t descAAH;  // N, C (for A * A^H)
+        CHECK_CUBLAS(cublasLtMatmulDescCreate(&descAAH, CUBLAS_COMPUTE_32F, CUDA_C_32F));
+        CHECK_CUBLAS(cublasLtMatmulDescSetAttribute(descAAH, CUBLASLT_MATMUL_DESC_TRANSA, &opN, sizeof(opN)));
+        CHECK_CUBLAS(cublasLtMatmulDescSetAttribute(descAAH, CUBLASLT_MATMUL_DESC_TRANSB, &opC, sizeof(opC)));
+
+        cublasLtMatrixLayout_t layoutA, layoutB, layoutC, layoutD;
         CHECK_CUBLAS(cublasLtMatrixLayoutCreate(&layoutA, CUDA_C_32F, n, k, n));
         CHECK_CUBLAS(cublasLtMatrixLayoutCreate(&layoutB, CUDA_C_32F, k, m, k));
         CHECK_CUBLAS(cublasLtMatrixLayoutCreate(&layoutC, CUDA_C_32F, n, m, n));
+        CHECK_CUBLAS(cublasLtMatrixLayoutCreate(&layoutD, CUDA_C_32F, n, n, n));
 
         int32_t batchCount32 = batchSize;
-        int64_t strideA64 = strideA, strideB64 = strideB, strideC64 = strideC;
+        int64_t strideA64 = strideA, strideB64 = strideB, strideC64 = strideC, strideD64 = strideD;
         CHECK_CUBLAS(cublasLtMatrixLayoutSetAttribute(layoutA, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT,
                                                      &batchCount32, sizeof(batchCount32)));
         CHECK_CUBLAS(cublasLtMatrixLayoutSetAttribute(layoutA, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET,
@@ -461,10 +505,24 @@ static void run_point(BenchContext& ctx, int batchSize, int n, int m, int k,
                                                      &batchCount32, sizeof(batchCount32)));
         CHECK_CUBLAS(cublasLtMatrixLayoutSetAttribute(layoutC, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET,
                                                      &strideC64, sizeof(strideC64)));
+        CHECK_CUBLAS(cublasLtMatrixLayoutSetAttribute(layoutD, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT,
+                                                     &batchCount32, sizeof(batchCount32)));
+        CHECK_CUBLAS(cublasLtMatrixLayoutSetAttribute(layoutD, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET,
+                                                     &strideD64, sizeof(strideD64)));
 
         for (int iter = 0; iter < NUM_ITERS; ++iter) {
             timer_begin(ctx);
-            CHECK_CUBLAS(cublasLtMatmul(ctx.ltHandle, matmulDesc,
+            CHECK_CUBLAS(cublasLtMatmul(ctx.ltHandle, descAAH,
+                                        &alpha,
+                                        d_A, layoutA,
+                                        d_A, layoutA,
+                                        &beta,
+                                        d_D, layoutD,
+                                        d_D, layoutD,
+                                        nullptr,
+                                        ctx.d_workspace, ctx.workspaceSize,
+                                        0));
+            CHECK_CUBLAS(cublasLtMatmul(ctx.ltHandle, descAB,
                                         &alpha,
                                         d_A, layoutA,
                                         d_B, layoutB,
@@ -482,12 +540,15 @@ static void run_point(BenchContext& ctx, int batchSize, int n, int m, int k,
         cublasLtMatrixLayoutDestroy(layoutA);
         cublasLtMatrixLayoutDestroy(layoutB);
         cublasLtMatrixLayoutDestroy(layoutC);
-        cublasLtMatmulDescDestroy(matmulDesc);
+        cublasLtMatrixLayoutDestroy(layoutD);
+        cublasLtMatmulDescDestroy(descAB);
+        cublasLtMatmulDescDestroy(descAAH);
     }
 
     cudaFree(d_A);
     cudaFree(d_B);
     cudaFree(d_C);
+    cudaFree(d_D);
 }
 
 struct SweepParams {
