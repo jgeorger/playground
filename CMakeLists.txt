@@ -62,6 +62,10 @@ target_link_libraries(benchmark_cgemm
     CUDA::cublasLt
 )
 
+# Multi-pulse canceller MTI benchmark
+add_executable(benchmark_mti benchmark_mti.cu)
+target_link_libraries(benchmark_mti CUDA::cudart)
+
 # BPDN (Basis Pursuit Denoise) library and test
 add_library(bpdn_lib bpdn_cuda.cu)
 target_link_libraries(bpdn_lib CUDA::cudart)
