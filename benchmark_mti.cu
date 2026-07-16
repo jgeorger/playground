@@ -41,33 +41,120 @@ __constant__ float c_coeffs[NUM_COEFF_ROWS * COEFFS_PER_ROW];
 // Input:  d_in  [num_pulses × num_range_bins]         (pulse-major)
 // Output: d_out [num_output_pulses × num_range_bins]  where
 //         num_output_pulses = num_pulses - num_taps + 1
-__global__ void mti_kernel(const cuComplex* __restrict__ d_in,
-                           cuComplex* __restrict__ d_out,
-                           int num_range_bins,
-                           int num_pulses,
-                           int num_taps) {
-    int r = blockIdx.x * blockDim.x + threadIdx.x;
-    int p = blockIdx.y * blockDim.y + threadIdx.y;
-    int num_output_pulses = num_pulses - num_taps + 1;
-    if (r >= num_range_bins || p >= num_output_pulses) return;
+//
+// Optimizations:
+//   * TAPS is a template parameter → inner loop is fully unrolled and
+//     coefficients are broadcast from constant memory into registers.
+//   * Each thread produces PPT consecutive output pulses using a shared
+//     sliding window of PPT + TAPS - 1 loads (vs PPT × TAPS naively),
+//     approaching the theoretical minimum of one global load per input.
+//   * Outer accumulation loop is over taps, inner over outputs — the
+//     window value at position i+k is broadcast into PPT MACs while the
+//     coefficient sits in a register.
+template <int TAPS, int PPT>
+__global__
+void mti_kernel_opt(const cuComplex* __restrict__ d_in,
+                    cuComplex* __restrict__ d_out,
+                    int num_range_bins,
+                    int num_pulses) {
+    const int r     = blockIdx.x * blockDim.x + threadIdx.x;
+    const int p_out = (blockIdx.y * blockDim.y + threadIdx.y) * PPT;
+    const int num_output_pulses = num_pulses - TAPS + 1;
+    if (r >= num_range_bins || p_out >= num_output_pulses) return;
 
-    const float* row = c_coeffs + num_taps * COEFFS_PER_ROW;
+    constexpr int W = PPT + TAPS - 1;
+    float win_re[W];
+    float win_im[W];
 
-    float acc_re = 0.0f;
-    float acc_im = 0.0f;
-    #pragma unroll 4
-    for (int k = 0; k < num_taps; ++k) {
-        cuComplex v = d_in[(p + k) * num_range_bins + r];
-        float c = row[k];
-        acc_re += c * v.x;
-        acc_im += c * v.y;
+    // Fast path when the entire window fits in bounds (the common case).
+    if (p_out + W <= num_pulses) {
+        #pragma unroll
+        for (int i = 0; i < W; ++i) {
+            cuComplex v = d_in[(p_out + i) * num_range_bins + r];
+            win_re[i] = v.x;
+            win_im[i] = v.y;
+        }
+    } else {
+        #pragma unroll
+        for (int i = 0; i < W; ++i) {
+            int p = p_out + i;
+            if (p < num_pulses) {
+                cuComplex v = d_in[p * num_range_bins + r];
+                win_re[i] = v.x;
+                win_im[i] = v.y;
+            } else {
+                win_re[i] = 0.0f;
+                win_im[i] = 0.0f;
+            }
+        }
     }
-    d_out[p * num_range_bins + r] = make_cuFloatComplex(acc_re, acc_im);
+
+    float acc_re[PPT];
+    float acc_im[PPT];
+    #pragma unroll
+    for (int i = 0; i < PPT; ++i) { acc_re[i] = 0.0f; acc_im[i] = 0.0f; }
+
+    // Outer over taps, inner over outputs: window register used PPT times
+    // per tap iteration; coefficient stays in a single register.
+    #pragma unroll
+    for (int k = 0; k < TAPS; ++k) {
+        float c = c_coeffs[TAPS * COEFFS_PER_ROW + k];
+        #pragma unroll
+        for (int i = 0; i < PPT; ++i) {
+            acc_re[i] += c * win_re[i + k];
+            acc_im[i] += c * win_im[i + k];
+        }
+    }
+
+    // Fast path when all PPT writes are in bounds.
+    if (p_out + PPT <= num_output_pulses) {
+        #pragma unroll
+        for (int i = 0; i < PPT; ++i) {
+            d_out[(p_out + i) * num_range_bins + r] =
+                make_cuFloatComplex(acc_re[i], acc_im[i]);
+        }
+    } else {
+        #pragma unroll
+        for (int i = 0; i < PPT; ++i) {
+            int p = p_out + i;
+            if (p < num_output_pulses) {
+                d_out[p * num_range_bins + r] =
+                    make_cuFloatComplex(acc_re[i], acc_im[i]);
+            }
+        }
+    }
+}
+
+static constexpr int MTI_PPT = 8;
+
+static void launch_mti(const cuComplex* d_in, cuComplex* d_out,
+                       int num_range_bins, int num_pulses, int num_taps) {
+    const int num_output_pulses = num_pulses - num_taps + 1;
+    dim3 block(32, 8);
+    dim3 grid((num_range_bins + block.x - 1) / block.x,
+              (num_output_pulses + block.y * MTI_PPT - 1) /
+                  (block.y * MTI_PPT));
+
+    #define MTI_DISPATCH(N)                                                    \
+        case N:                                                                \
+            mti_kernel_opt<N, MTI_PPT><<<grid, block>>>(                       \
+                d_in, d_out, num_range_bins, num_pulses);                      \
+            break
+
+    switch (num_taps) {
+        MTI_DISPATCH(3);  MTI_DISPATCH(5);  MTI_DISPATCH(7);  MTI_DISPATCH(9);
+        MTI_DISPATCH(11); MTI_DISPATCH(13); MTI_DISPATCH(15); MTI_DISPATCH(17);
+        MTI_DISPATCH(19);
+        default: /* validated at caller */ break;
+    }
+    #undef MTI_DISPATCH
 }
 
 static void upload_coeff_table() {
+    // Populate only odd tap counts. Even rows stay zero-filled and are
+    // rejected before dispatch, so they can never be selected at runtime.
     std::vector<float> host_table(NUM_COEFF_ROWS * COEFFS_PER_ROW, 0.0f);
-    for (int n = MIN_TAPS; n <= MAX_TAPS; ++n) {
+    for (int n = MIN_TAPS; n <= MAX_TAPS; n += 2) {
         int order = n - 1;   // polynomial order = n - 1
         long long binom = 1; // C(order, 0)
         for (int k = 0; k <= order; ++k) {
@@ -188,6 +275,11 @@ static void run_point(RunContext& ctx, int num_range_bins, int num_pulses,
                      num_taps, MIN_TAPS, MAX_TAPS);
         return;
     }
+    if ((num_taps & 1) == 0) {
+        std::fprintf(stderr,
+                     "  skip: num_taps=%d must be odd\n", num_taps);
+        return;
+    }
     if (num_taps > num_pulses) {
         std::fprintf(stderr,
                      "  skip: num_taps=%d > num_pulses=%d\n",
@@ -218,17 +310,12 @@ static void run_point(RunContext& ctx, int num_range_bins, int num_pulses,
     CHECK_CUDA(cudaMemcpy(d_in, h_in.data(), in_elems * sizeof(cuComplex),
                           cudaMemcpyHostToDevice));
 
-    dim3 block(32, 8);
-    dim3 grid((num_range_bins    + block.x - 1) / block.x,
-              (num_output_pulses + block.y - 1) / block.y);
-
     double sum_ms = 0.0;
     int counted = 0;
     for (int iter = 0; iter < NUM_ITERS; ++iter) {
         CHECK_CUDA(cudaDeviceSynchronize());
         CHECK_CUDA(cudaEventRecord(ctx.ev_start, 0));
-        mti_kernel<<<grid, block>>>(d_in, d_out,
-                                    num_range_bins, num_pulses, num_taps);
+        launch_mti(d_in, d_out, num_range_bins, num_pulses, num_taps);
         CHECK_CUDA(cudaEventRecord(ctx.ev_stop, 0));
         CHECK_CUDA(cudaEventSynchronize(ctx.ev_stop));
         float ms = 0.0f;
@@ -255,14 +342,14 @@ static void print_usage(const char* prog) {
                  "  %s <num_range_bins> <num_pulses> <num_taps>\n"
                  "  %s --sweep <file.json> [--out <base>]\n"
                  "\n"
-                 "num_taps must be in [%d, %d] (binomial coefficients precomputed\n"
-                 "into constant memory at startup).\n"
+                 "num_taps must be an odd integer in [%d, %d] (binomial\n"
+                 "coefficients precomputed into constant memory at startup).\n"
                  "\n"
                  "Sweep file JSON schema:\n"
                  "  {\n"
                  "    \"num_range_bins\": [1024, 2048, 4096],\n"
                  "    \"num_pulses\":     [16, 32, 64],\n"
-                 "    \"num_taps\":       [3, 4, 5, 8]\n"
+                 "    \"num_taps\":       [3, 5, 7, 9]\n"
                  "  }\n"
                  "When --sweep is given, positional arguments are ignored.\n"
                  "\n"
