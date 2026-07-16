@@ -56,11 +56,21 @@ __global__
 void mti_kernel_opt(const cuComplex* __restrict__ d_in,
                     cuComplex* __restrict__ d_out,
                     int num_range_bins,
-                    int num_pulses) {
+                    int num_pulses,
+                    size_t in_channel_stride,
+                    size_t out_channel_stride) {
+    const int channel = blockIdx.z;
+    const cuComplex* in_ch  = d_in  + channel * in_channel_stride;
+    cuComplex*       out_ch = d_out + channel * out_channel_stride;
+
     const int r     = blockIdx.x * blockDim.x + threadIdx.x;
     const int p_out = (blockIdx.y * blockDim.y + threadIdx.y) * PPT;
     const int num_output_pulses = num_pulses - TAPS + 1;
     if (r >= num_range_bins || p_out >= num_output_pulses) return;
+
+    // Index arithmetic within a channel uses size_t so a single channel
+    // may exceed 2 GiB of elements without wrapping around.
+    const size_t rb64 = (size_t)num_range_bins;
 
     constexpr int W = PPT + TAPS - 1;
     float win_re[W];
@@ -70,7 +80,7 @@ void mti_kernel_opt(const cuComplex* __restrict__ d_in,
     if (p_out + W <= num_pulses) {
         #pragma unroll
         for (int i = 0; i < W; ++i) {
-            cuComplex v = d_in[(p_out + i) * num_range_bins + r];
+            cuComplex v = in_ch[(size_t)(p_out + i) * rb64 + r];
             win_re[i] = v.x;
             win_im[i] = v.y;
         }
@@ -79,7 +89,7 @@ void mti_kernel_opt(const cuComplex* __restrict__ d_in,
         for (int i = 0; i < W; ++i) {
             int p = p_out + i;
             if (p < num_pulses) {
-                cuComplex v = d_in[p * num_range_bins + r];
+                cuComplex v = in_ch[(size_t)p * rb64 + r];
                 win_re[i] = v.x;
                 win_im[i] = v.y;
             } else {
@@ -110,7 +120,7 @@ void mti_kernel_opt(const cuComplex* __restrict__ d_in,
     if (p_out + PPT <= num_output_pulses) {
         #pragma unroll
         for (int i = 0; i < PPT; ++i) {
-            d_out[(p_out + i) * num_range_bins + r] =
+            out_ch[(size_t)(p_out + i) * rb64 + r] =
                 make_cuFloatComplex(acc_re[i], acc_im[i]);
         }
     } else {
@@ -118,7 +128,7 @@ void mti_kernel_opt(const cuComplex* __restrict__ d_in,
         for (int i = 0; i < PPT; ++i) {
             int p = p_out + i;
             if (p < num_output_pulses) {
-                d_out[p * num_range_bins + r] =
+                out_ch[(size_t)p * rb64 + r] =
                     make_cuFloatComplex(acc_re[i], acc_im[i]);
             }
         }
@@ -128,17 +138,22 @@ void mti_kernel_opt(const cuComplex* __restrict__ d_in,
 static constexpr int MTI_PPT = 8;
 
 static void launch_mti(const cuComplex* d_in, cuComplex* d_out,
-                       int num_range_bins, int num_pulses, int num_taps) {
+                       int num_channels, int num_range_bins, int num_pulses,
+                       int num_taps) {
     const int num_output_pulses = num_pulses - num_taps + 1;
+    const size_t in_stride  = (size_t)num_pulses        * num_range_bins;
+    const size_t out_stride = (size_t)num_output_pulses * num_range_bins;
     dim3 block(32, 8);
     dim3 grid((num_range_bins + block.x - 1) / block.x,
               (num_output_pulses + block.y * MTI_PPT - 1) /
-                  (block.y * MTI_PPT));
+                  (block.y * MTI_PPT),
+              (unsigned)num_channels);
 
     #define MTI_DISPATCH(N)                                                    \
         case N:                                                                \
             mti_kernel_opt<N, MTI_PPT><<<grid, block>>>(                       \
-                d_in, d_out, num_range_bins, num_pulses);                      \
+                d_in, d_out, num_range_bins, num_pulses,                       \
+                in_stride, out_stride);                                        \
             break
 
     switch (num_taps) {
@@ -168,6 +183,7 @@ static void upload_coeff_table() {
 }
 
 struct SweepParams {
+    std::vector<int> num_channels;
     std::vector<int> num_range_bins;
     std::vector<int> num_pulses;
     std::vector<int> num_taps;
@@ -211,16 +227,20 @@ static bool load_sweep_json(const std::string& path, SweepParams& sp) {
     ss << f.rdbuf();
     std::string text = ss.str();
 
+    extract_int_array(text, "num_channels", sp.num_channels);
     bool have_r = extract_int_array(text, "num_range_bins", sp.num_range_bins);
     bool have_p = extract_int_array(text, "num_pulses",     sp.num_pulses);
     bool have_t = extract_int_array(text, "num_taps",       sp.num_taps);
+
+    if (sp.num_channels.empty()) sp.num_channels.push_back(1);  // default
 
     if (!have_r || sp.num_range_bins.empty() ||
         !have_p || sp.num_pulses.empty() ||
         !have_t || sp.num_taps.empty()) {
         std::fprintf(stderr,
                      "Sweep JSON must define non-empty arrays "
-                     "\"num_range_bins\", \"num_pulses\", \"num_taps\".\n");
+                     "\"num_range_bins\", \"num_pulses\", \"num_taps\" "
+                     "(and optionally \"num_channels\").\n");
         return false;
     }
     return true;
@@ -263,12 +283,12 @@ static void emit_line(RunContext& ctx, const char* line, int len) {
 }
 
 static void emit_header(RunContext& ctx) {
-    const char* hdr = "num_range_bins,num_pulses,num_taps,avg_runtime_ms\n";
+    const char* hdr = "num_channels,num_range_bins,num_pulses,num_taps,avg_runtime_ms\n";
     emit_line(ctx, hdr, (int)std::strlen(hdr));
 }
 
-static void run_point(RunContext& ctx, int num_range_bins, int num_pulses,
-                      int num_taps) {
+static void run_point(RunContext& ctx, int num_channels, int num_range_bins,
+                      int num_pulses, int num_taps) {
     if (num_taps < MIN_TAPS || num_taps > MAX_TAPS) {
         std::fprintf(stderr,
                      "  skip: num_taps=%d outside supported range [%d, %d]\n",
@@ -286,15 +306,24 @@ static void run_point(RunContext& ctx, int num_range_bins, int num_pulses,
                      num_taps, num_pulses);
         return;
     }
+    // grid.z is limited to 65535 on all current CUDA GPUs.
+    if (num_channels < 1 || num_channels > 65535) {
+        std::fprintf(stderr,
+                     "  skip: num_channels=%d outside supported range [1, 65535]\n",
+                     num_channels);
+        return;
+    }
 
     int num_output_pulses = num_pulses - num_taps + 1;
-    size_t in_elems  = (size_t)num_pulses * num_range_bins;
-    size_t out_elems = (size_t)num_output_pulses * num_range_bins;
+    size_t per_channel_in  = (size_t)num_pulses        * num_range_bins;
+    size_t per_channel_out = (size_t)num_output_pulses * num_range_bins;
+    size_t in_elems  = (size_t)num_channels * per_channel_in;
+    size_t out_elems = (size_t)num_channels * per_channel_out;
 
     std::fprintf(stderr,
-                 "Point: num_range_bins=%d num_pulses=%d num_taps=%d | "
-                 "mem in=%.2f out=%.2f MB\n",
-                 num_range_bins, num_pulses, num_taps,
+                 "Point: num_channels=%d num_range_bins=%d num_pulses=%d "
+                 "num_taps=%d | mem in=%.2f out=%.2f MB\n",
+                 num_channels, num_range_bins, num_pulses, num_taps,
                  (double)(in_elems  * sizeof(cuComplex)) / (1024.0 * 1024.0),
                  (double)(out_elems * sizeof(cuComplex)) / (1024.0 * 1024.0));
 
@@ -315,7 +344,8 @@ static void run_point(RunContext& ctx, int num_range_bins, int num_pulses,
     for (int iter = 0; iter < NUM_ITERS; ++iter) {
         CHECK_CUDA(cudaDeviceSynchronize());
         CHECK_CUDA(cudaEventRecord(ctx.ev_start, 0));
-        launch_mti(d_in, d_out, num_range_bins, num_pulses, num_taps);
+        launch_mti(d_in, d_out, num_channels, num_range_bins, num_pulses,
+                   num_taps);
         CHECK_CUDA(cudaEventRecord(ctx.ev_stop, 0));
         CHECK_CUDA(cudaEventSynchronize(ctx.ev_stop));
         float ms = 0.0f;
@@ -327,9 +357,10 @@ static void run_point(RunContext& ctx, int num_range_bins, int num_pulses,
     }
     float avg_ms = (float)(sum_ms / counted);
 
-    char line[128];
-    int len = std::snprintf(line, sizeof(line), "%d,%d,%d,%.6f\n",
-                            num_range_bins, num_pulses, num_taps, avg_ms);
+    char line[160];
+    int len = std::snprintf(line, sizeof(line), "%d,%d,%d,%d,%.6f\n",
+                            num_channels, num_range_bins, num_pulses,
+                            num_taps, avg_ms);
     emit_line(ctx, line, len);
 
     cudaFree(d_in);
@@ -339,22 +370,27 @@ static void run_point(RunContext& ctx, int num_range_bins, int num_pulses,
 static void print_usage(const char* prog) {
     std::fprintf(stderr,
                  "Usage:\n"
-                 "  %s <num_range_bins> <num_pulses> <num_taps>\n"
+                 "  %s <num_channels> <num_range_bins> <num_pulses> <num_taps>\n"
                  "  %s --sweep <file.json> [--out <base>]\n"
                  "\n"
                  "num_taps must be an odd integer in [%d, %d] (binomial\n"
                  "coefficients precomputed into constant memory at startup).\n"
+                 "num_channels acts as a batch dimension: the input volume is\n"
+                 "num_channels * num_pulses * num_range_bins complex samples,\n"
+                 "and the same MTI filter is applied independently per channel.\n"
                  "\n"
                  "Sweep file JSON schema:\n"
                  "  {\n"
+                 "    \"num_channels\":   [1, 4, 16],\n"
                  "    \"num_range_bins\": [1024, 2048, 4096],\n"
                  "    \"num_pulses\":     [16, 32, 64],\n"
                  "    \"num_taps\":       [3, 5, 7, 9]\n"
                  "  }\n"
+                 "\"num_channels\" is optional (defaults to [1]).\n"
                  "When --sweep is given, positional arguments are ignored.\n"
                  "\n"
                  "Output CSV (also written to stdout):\n"
-                 "  num_range_bins,num_pulses,num_taps,avg_runtime_ms\n",
+                 "  num_channels,num_range_bins,num_pulses,num_taps,avg_runtime_ms\n",
                  prog, prog, MIN_TAPS, MAX_TAPS);
 }
 
@@ -381,15 +417,19 @@ int main(int argc, char** argv) {
     if (!sweep_path.empty()) {
         if (!load_sweep_json(sweep_path, sp)) return 1;
     } else {
-        if (positional.size() != 3) {
+        if (positional.size() != 4) {
             print_usage(argv[0]);
             return 1;
         }
-        sp.num_range_bins.push_back(std::atoi(positional[0].c_str()));
-        sp.num_pulses.push_back(std::atoi(positional[1].c_str()));
-        sp.num_taps.push_back(std::atoi(positional[2].c_str()));
+        sp.num_channels.push_back(std::atoi(positional[0].c_str()));
+        sp.num_range_bins.push_back(std::atoi(positional[1].c_str()));
+        sp.num_pulses.push_back(std::atoi(positional[2].c_str()));
+        sp.num_taps.push_back(std::atoi(positional[3].c_str()));
     }
 
+    for (int v : sp.num_channels) if (v <= 0) {
+        std::fprintf(stderr, "num_channels values must be positive\n"); return 1;
+    }
     for (int v : sp.num_range_bins) if (v <= 0) {
         std::fprintf(stderr, "num_range_bins values must be positive\n"); return 1;
     }
@@ -414,22 +454,23 @@ int main(int argc, char** argv) {
 
     emit_header(ctx);
 
-    size_t total = sp.num_range_bins.size() * sp.num_pulses.size() *
-                   sp.num_taps.size();
+    size_t total = sp.num_channels.size() * sp.num_range_bins.size() *
+                   sp.num_pulses.size() * sp.num_taps.size();
     std::fprintf(stderr,
-                 "Sweep: %zu combinations (num_range_bins=%zu, num_pulses=%zu, "
-                 "num_taps=%zu)\n",
-                 total, sp.num_range_bins.size(), sp.num_pulses.size(),
-                 sp.num_taps.size());
+                 "Sweep: %zu combinations (num_channels=%zu, num_range_bins=%zu, "
+                 "num_pulses=%zu, num_taps=%zu)\n",
+                 total, sp.num_channels.size(), sp.num_range_bins.size(),
+                 sp.num_pulses.size(), sp.num_taps.size());
 
     size_t idx = 0;
-    for (int r : sp.num_range_bins)
-        for (int p : sp.num_pulses)
-            for (int t : sp.num_taps) {
-                ++idx;
-                std::fprintf(stderr, "[%zu/%zu] ", idx, total);
-                run_point(ctx, r, p, t);
-            }
+    for (int c : sp.num_channels)
+        for (int r : sp.num_range_bins)
+            for (int p : sp.num_pulses)
+                for (int t : sp.num_taps) {
+                    ++idx;
+                    std::fprintf(stderr, "[%zu/%zu] ", idx, total);
+                    run_point(ctx, c, r, p, t);
+                }
 
     cudaEventDestroy(ctx.ev_start);
     cudaEventDestroy(ctx.ev_stop);
