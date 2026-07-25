@@ -37,10 +37,15 @@ static constexpr int NUM_COEFF_ROWS  = MAX_TAPS + 1;     // indexed by num_taps
 //   ...
 __constant__ float c_coeffs[NUM_COEFF_ROWS * COEFFS_PER_ROW];
 
-// Multi-pulse canceller MTI filter.
-// Input:  d_in  [num_pulses × num_range_bins]         (pulse-major)
-// Output: d_out [num_output_pulses × num_range_bins]  where
-//         num_output_pulses = num_pulses - num_taps + 1
+// Multi-pulse canceller MTI filter, "same-mode" (output length == input length).
+// Input:  d_in  [num_pulses × num_range_bins]  (pulse-major, per channel)
+// Output: d_out [num_pulses × num_range_bins]  (pulse-major, per channel)
+//
+// Centered convolution:
+//   output[p, r] = sum_{k=0..TAPS-1} coeff[k] * input[p + k - HALF_TAPS, r]
+// with input treated as zero outside [0, num_pulses). TAPS is required
+// to be odd, so HALF_TAPS = (TAPS - 1) / 2 taps hang off each side and
+// the output timing lines up with the input timing.
 //
 // Optimizations:
 //   * TAPS is a template parameter → inner loop is fully unrolled and
@@ -65,30 +70,34 @@ void mti_kernel_opt(const cuComplex* __restrict__ d_in,
 
     const int r     = blockIdx.x * blockDim.x + threadIdx.x;
     const int p_out = (blockIdx.y * blockDim.y + threadIdx.y) * PPT;
-    const int num_output_pulses = num_pulses - TAPS + 1;
-    if (r >= num_range_bins || p_out >= num_output_pulses) return;
+    if (r >= num_range_bins || p_out >= num_pulses) return;
 
     // Index arithmetic within a channel uses size_t so a single channel
     // may exceed 2 GiB of elements without wrapping around.
     const size_t rb64 = (size_t)num_range_bins;
 
+    constexpr int HALF_TAPS = (TAPS - 1) / 2;   // TAPS is guaranteed odd
     constexpr int W = PPT + TAPS - 1;
+    const int load_base = p_out - HALF_TAPS;    // first input index needed
+
     float win_re[W];
     float win_im[W];
 
-    // Fast path when the entire window fits in bounds (the common case).
-    if (p_out + W <= num_pulses) {
+    // Fast path when the entire window fits in bounds (the common case:
+    // any output away from the leading HALF_TAPS or trailing HALF_TAPS
+    // pulses of the volume).
+    if (load_base >= 0 && load_base + W <= num_pulses) {
         #pragma unroll
         for (int i = 0; i < W; ++i) {
-            cuComplex v = in_ch[(size_t)(p_out + i) * rb64 + r];
+            cuComplex v = in_ch[(size_t)(load_base + i) * rb64 + r];
             win_re[i] = v.x;
             win_im[i] = v.y;
         }
     } else {
         #pragma unroll
         for (int i = 0; i < W; ++i) {
-            int p = p_out + i;
-            if (p < num_pulses) {
+            int p = load_base + i;
+            if ((unsigned)p < (unsigned)num_pulses) {   // handles both p<0 and p>=np
                 cuComplex v = in_ch[(size_t)p * rb64 + r];
                 win_re[i] = v.x;
                 win_im[i] = v.y;
@@ -117,7 +126,7 @@ void mti_kernel_opt(const cuComplex* __restrict__ d_in,
     }
 
     // Fast path when all PPT writes are in bounds.
-    if (p_out + PPT <= num_output_pulses) {
+    if (p_out + PPT <= num_pulses) {
         #pragma unroll
         for (int i = 0; i < PPT; ++i) {
             out_ch[(size_t)(p_out + i) * rb64 + r] =
@@ -127,7 +136,7 @@ void mti_kernel_opt(const cuComplex* __restrict__ d_in,
         #pragma unroll
         for (int i = 0; i < PPT; ++i) {
             int p = p_out + i;
-            if (p < num_output_pulses) {
+            if (p < num_pulses) {
                 out_ch[(size_t)p * rb64 + r] =
                     make_cuFloatComplex(acc_re[i], acc_im[i]);
             }
@@ -140,20 +149,18 @@ static constexpr int MTI_PPT = 8;
 static void launch_mti(const cuComplex* d_in, cuComplex* d_out,
                        int num_channels, int num_range_bins, int num_pulses,
                        int num_taps) {
-    const int num_output_pulses = num_pulses - num_taps + 1;
-    const size_t in_stride  = (size_t)num_pulses        * num_range_bins;
-    const size_t out_stride = (size_t)num_output_pulses * num_range_bins;
+    // Same-mode convolution: one output pulse per input pulse.
+    const size_t stride = (size_t)num_pulses * num_range_bins;
     dim3 block(32, 8);
     dim3 grid((num_range_bins + block.x - 1) / block.x,
-              (num_output_pulses + block.y * MTI_PPT - 1) /
-                  (block.y * MTI_PPT),
+              (num_pulses + block.y * MTI_PPT - 1) / (block.y * MTI_PPT),
               (unsigned)num_channels);
 
     #define MTI_DISPATCH(N)                                                    \
         case N:                                                                \
             mti_kernel_opt<N, MTI_PPT><<<grid, block>>>(                       \
                 d_in, d_out, num_range_bins, num_pulses,                       \
-                in_stride, out_stride);                                        \
+                stride, stride);                                               \
             break
 
     switch (num_taps) {
@@ -300,12 +307,6 @@ static void run_point(RunContext& ctx, int num_channels, int num_range_bins,
                      "  skip: num_taps=%d must be odd\n", num_taps);
         return;
     }
-    if (num_taps > num_pulses) {
-        std::fprintf(stderr,
-                     "  skip: num_taps=%d > num_pulses=%d\n",
-                     num_taps, num_pulses);
-        return;
-    }
     // grid.z is limited to 65535 on all current CUDA GPUs.
     if (num_channels < 1 || num_channels > 65535) {
         std::fprintf(stderr,
@@ -314,11 +315,10 @@ static void run_point(RunContext& ctx, int num_channels, int num_range_bins,
         return;
     }
 
-    int num_output_pulses = num_pulses - num_taps + 1;
-    size_t per_channel_in  = (size_t)num_pulses        * num_range_bins;
-    size_t per_channel_out = (size_t)num_output_pulses * num_range_bins;
-    size_t in_elems  = (size_t)num_channels * per_channel_in;
-    size_t out_elems = (size_t)num_channels * per_channel_out;
+    // Same-mode convolution — output shape matches input.
+    size_t per_channel = (size_t)num_pulses * num_range_bins;
+    size_t in_elems  = (size_t)num_channels * per_channel;
+    size_t out_elems = in_elems;
 
     std::fprintf(stderr,
                  "Point: num_channels=%d num_range_bins=%d num_pulses=%d "
@@ -378,6 +378,8 @@ static void print_usage(const char* prog) {
                  "num_channels acts as a batch dimension: the input volume is\n"
                  "num_channels * num_pulses * num_range_bins complex samples,\n"
                  "and the same MTI filter is applied independently per channel.\n"
+                 "Output has the same shape as the input; centered same-mode\n"
+                 "convolution is used, with zero padding at the pulse edges.\n"
                  "\n"
                  "Sweep file JSON schema:\n"
                  "  {\n"
