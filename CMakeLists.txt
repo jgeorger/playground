@@ -117,3 +117,14 @@ add_test(NAME SegmentMergerTests COMMAND test_segment_merger)
 set_property(TARGET segment_merger_lib PROPERTY CUDA_SEPARABLE_COMPILATION ON)
 set_property(TARGET test_segment_merger PROPERTY CUDA_SEPARABLE_COMPILATION ON)
 set_property(TARGET benchmark_segment_merger PROPERTY CUDA_SEPARABLE_COMPILATION ON)
+
+# Strided batch of cuComplex identity matrices
+add_library(identity_batched_lib identity_batched.cu)
+target_link_libraries(identity_batched_lib CUDA::cudart)
+
+add_executable(test_identity_batched test_identity_batched.cu)
+target_link_libraries(test_identity_batched identity_batched_lib gtest CUDA::cudart)
+add_test(NAME IdentityBatchedTests COMMAND test_identity_batched)
+
+add_executable(benchmark_identity_batched benchmark_identity_batched.cu)
+target_link_libraries(benchmark_identity_batched identity_batched_lib CUDA::cudart)
