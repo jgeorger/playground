@@ -32,9 +32,9 @@ pipeline {
                 sh 'rm -rf test-results && mkdir -p test-results'
                 script {
                     // GoogleTest suites write JUnit XML for per-case reporting
-                    def gtests = ['test_segment_merger', 'test_identity_batched']
+                    def gtests = ['test_segment_merger', 'test_identity_batched', 'test_bpdn']
                     // Plain executables that return nonzero on failure
-                    def plainTests = ['test_bpdn', 'test_linear_solve_dx']
+                    def plainTests = ['test_linear_solve_dx']
 
                     // catchError lets every test run even if an earlier one fails
                     gtests.each { t ->

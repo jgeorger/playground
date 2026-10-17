@@ -19,7 +19,11 @@ __device__ float blockReduceSum(float val, float* sharedMem, int tid, int blockS
         }
         __syncthreads();
     }
-    return sharedMem[0];
+    // Every thread must read the result before sharedMem is reused by the
+    // next reduction, or thread 0 can overwrite sharedMem[0] too early
+    float result = sharedMem[0];
+    __syncthreads();
+    return result;
 }
 
 __device__ float blockReduceMax(float val, float* sharedMem, int tid, int blockSize) {
@@ -32,7 +36,11 @@ __device__ float blockReduceMax(float val, float* sharedMem, int tid, int blockS
         }
         __syncthreads();
     }
-    return sharedMem[0];
+    // Every thread must read the result before sharedMem is reused by the
+    // next reduction, or thread 0 can overwrite sharedMem[0] too early
+    float result = sharedMem[0];
+    __syncthreads();
+    return result;
 }
 
 __device__ float dotProduct(const float* a, const float* b, int n,

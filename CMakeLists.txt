@@ -74,6 +74,7 @@ set_property(TARGET bpdn_lib PROPERTY CUDA_SEPARABLE_COMPILATION ON)
 add_executable(test_bpdn test_bpdn.cu)
 target_link_libraries(test_bpdn
     bpdn_lib
+    gtest
     CUDA::cudart
 )
 set_property(TARGET test_bpdn PROPERTY CUDA_SEPARABLE_COMPILATION ON)
@@ -112,6 +113,7 @@ set_target_properties(test_linear_solve_dx PROPERTIES
 # Enable testing
 enable_testing()
 add_test(NAME SegmentMergerTests COMMAND test_segment_merger)
+add_test(NAME BPDNTests COMMAND test_bpdn)
 
 # Set CUDA separable compilation for device linking
 set_property(TARGET segment_merger_lib PROPERTY CUDA_SEPARABLE_COMPILATION ON)

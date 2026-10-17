@@ -1,3 +1,5 @@
+#include <gtest/gtest.h>
+
 #include "bpdn_cuda.h"
 #include <iostream>
 #include <vector>
@@ -13,6 +15,18 @@
  * 2. Batch of random problems
  * 3. Performance test with ~1500 problems
  */
+
+#define CUDA_OK(expr)                                                     \
+    do {                                                                  \
+        const cudaError_t err_ = (expr);                                  \
+        ASSERT_EQ(err_, cudaSuccess) << #expr << ": " << cudaGetErrorString(err_); \
+    } while (0)
+
+// Frees the batch's device memory when a test returns, including on ASSERT
+struct BatchGuard {
+    bpdn::BPDNBatch& batch;
+    ~BatchGuard() { bpdn::freeBPDNBatch(batch); }
+};
 
 // Generate a sparse signal
 void generateSparseSignal(float* x, int n, int sparsity, std::mt19937& gen) {
@@ -65,9 +79,7 @@ float norm2Host(const float* x, int n) {
 }
 
 // Test 1: Single problem with known sparse solution
-bool testSingleProblem() {
-    std::cout << "Test 1: Single problem with known sparse solution\n";
-
+TEST(BPDN, SingleProblem) {
     const int m = 50;   // measurements
     const int n = 100;  // unknowns
     const int k = 5;    // sparsity
@@ -99,45 +111,24 @@ bool testSingleProblem() {
     batch.n = n;
     batch.uniformSigma = true;
 
-    cudaError_t err = bpdn::allocateBPDNBatch(batch);
-    if (err != cudaSuccess) {
-        std::cerr << "Failed to allocate batch: " << cudaGetErrorString(err) << "\n";
-        return false;
-    }
+    CUDA_OK(bpdn::allocateBPDNBatch(batch));
+    BatchGuard guard{batch};
 
     float sigma = noiseLevel;  // Set sigma to noise level
-    err = bpdn::copyToDevice(batch, A.data(), b.data(), &sigma, nullptr, 0);
-    if (err != cudaSuccess) {
-        std::cerr << "Failed to copy to device: " << cudaGetErrorString(err) << "\n";
-        bpdn::freeBPDNBatch(batch);
-        return false;
-    }
+    CUDA_OK(bpdn::copyToDevice(batch, A.data(), b.data(), &sigma, nullptr, 0));
 
     bpdn::BPDNParams params;
     params.sigma = sigma;
     params.maxIterations = 500;
     params.optTol = 1e-5f;
 
-    err = bpdn::solveBPDNBatch(batch, params, 0);
-    if (err != cudaSuccess) {
-        std::cerr << "Failed to solve: " << cudaGetErrorString(err) << "\n";
-        bpdn::freeBPDNBatch(batch);
-        return false;
-    }
+    CUDA_OK(bpdn::solveBPDNBatch(batch, params, 0));
 
     // Copy results back
     std::vector<float> x_sol(n);
     bpdn::BPDNInfo info;
-    err = bpdn::copyToHost(batch, x_sol.data(), &info, 0);
-    cudaDeviceSynchronize();
-
-    if (err != cudaSuccess) {
-        std::cerr << "Failed to copy results: " << cudaGetErrorString(err) << "\n";
-        bpdn::freeBPDNBatch(batch);
-        return false;
-    }
-
-    bpdn::freeBPDNBatch(batch);
+    CUDA_OK(bpdn::copyToHost(batch, x_sol.data(), &info, 0));
+    CUDA_OK(cudaDeviceSynchronize());
 
     // Compute actual residual
     std::vector<float> r(m);
@@ -162,16 +153,12 @@ bool testSingleProblem() {
     std::cout << "  True signal L1 norm: " << norm1Host(x_true.data(), n) << "\n";
     std::cout << "  Relative recovery error: " << recoveryError << "\n";
 
-    bool pass = (actualRNorm <= 1.5f * sigma) && (recoveryError < 0.5f);
-    std::cout << "  Result: " << (pass ? "PASS" : "FAIL") << "\n\n";
-
-    return pass;
+    EXPECT_LE(actualRNorm, 1.5f * sigma);
+    EXPECT_LT(recoveryError, 0.5f);
 }
 
 // Test 2: Batch of problems
-bool testBatch() {
-    std::cout << "Test 2: Batch of problems\n";
-
+TEST(BPDN, Batch) {
     const int numProblems = 100;
     const int m = 60;
     const int n = 120;
@@ -211,18 +198,10 @@ bool testBatch() {
     batch.n = n;
     batch.uniformSigma = false;
 
-    cudaError_t err = bpdn::allocateBPDNBatch(batch);
-    if (err != cudaSuccess) {
-        std::cerr << "Failed to allocate batch: " << cudaGetErrorString(err) << "\n";
-        return false;
-    }
+    CUDA_OK(bpdn::allocateBPDNBatch(batch));
+    BatchGuard guard{batch};
 
-    err = bpdn::copyToDevice(batch, A.data(), b.data(), sigmas.data(), nullptr, 0);
-    if (err != cudaSuccess) {
-        std::cerr << "Failed to copy to device: " << cudaGetErrorString(err) << "\n";
-        bpdn::freeBPDNBatch(batch);
-        return false;
-    }
+    CUDA_OK(bpdn::copyToDevice(batch, A.data(), b.data(), sigmas.data(), nullptr, 0));
 
     bpdn::BPDNParams params;
     params.sigma = 0.0f;  // Per-problem sigma is used
@@ -230,25 +209,17 @@ bool testBatch() {
     params.optTol = 1e-3f;
 
     auto start = std::chrono::high_resolution_clock::now();
-    err = bpdn::solveBPDNBatch(batch, params, 0);
-    cudaDeviceSynchronize();
+    CUDA_OK(bpdn::solveBPDNBatch(batch, params, 0));
+    CUDA_OK(cudaDeviceSynchronize());
     auto end = std::chrono::high_resolution_clock::now();
-
-    if (err != cudaSuccess) {
-        std::cerr << "Failed to solve: " << cudaGetErrorString(err) << "\n";
-        bpdn::freeBPDNBatch(batch);
-        return false;
-    }
 
     double elapsed = std::chrono::duration<double, std::milli>(end - start).count();
 
     // Copy results
     std::vector<float> x_sol(numProblems * n);
     std::vector<bpdn::BPDNInfo> infos(numProblems);
-    err = bpdn::copyToHost(batch, x_sol.data(), infos.data(), 0);
-    cudaDeviceSynchronize();
-
-    bpdn::freeBPDNBatch(batch);
+    CUDA_OK(bpdn::copyToHost(batch, x_sol.data(), infos.data(), 0));
+    CUDA_OK(cudaDeviceSynchronize());
 
     // Compute statistics
     int numConverged = 0;
@@ -282,16 +253,12 @@ bool testBatch() {
     std::cout << "  Time per problem: " << (elapsed / numProblems) << " ms\n";
 
     // Pass if most problems converge and recovery error is reasonable
-    bool pass = (numConverged >= 0.8 * numProblems) && (avgRecoveryError < 0.1f);
-    std::cout << "  Result: " << (pass ? "PASS" : "FAIL") << "\n\n";
-
-    return pass;
+    EXPECT_GE(numConverged, 0.8 * numProblems);
+    EXPECT_LT(avgRecoveryError, 0.1f);
 }
 
 // Test 3: Performance test with ~1500 problems
-bool testPerformance() {
-    std::cout << "Test 3: Performance test (1500 problems)\n";
-
+TEST(BPDN, Performance) {
     const int numProblems = 1500;
     const int m = 150;   // More measurements for better conditioning
     const int n = 250;
@@ -333,18 +300,10 @@ bool testPerformance() {
     batch.n = n;
     batch.uniformSigma = false;
 
-    cudaError_t err = bpdn::allocateBPDNBatch(batch);
-    if (err != cudaSuccess) {
-        std::cerr << "Failed to allocate batch: " << cudaGetErrorString(err) << "\n";
-        return false;
-    }
+    CUDA_OK(bpdn::allocateBPDNBatch(batch));
+    BatchGuard guard{batch};
 
-    err = bpdn::copyToDevice(batch, A.data(), b.data(), sigmas.data(), nullptr, 0);
-    if (err != cudaSuccess) {
-        std::cerr << "Failed to copy to device: " << cudaGetErrorString(err) << "\n";
-        bpdn::freeBPDNBatch(batch);
-        return false;
-    }
+    CUDA_OK(bpdn::copyToDevice(batch, A.data(), b.data(), sigmas.data(), nullptr, 0));
 
     bpdn::BPDNParams params;
     params.sigma = 0.0f;  // Per-problem sigma
@@ -352,33 +311,25 @@ bool testPerformance() {
     params.optTol = 5e-3f;        // Relaxed tolerance
 
     // Warmup
-    err = bpdn::solveBPDNBatch(batch, params, 0);
-    cudaDeviceSynchronize();
+    CUDA_OK(bpdn::solveBPDNBatch(batch, params, 0));
+    CUDA_OK(cudaDeviceSynchronize());
 
     // Reset x to zero for timing run
-    cudaMemset(batch.d_x, 0, numProblems * n * sizeof(float));
+    CUDA_OK(cudaMemset(batch.d_x, 0, numProblems * n * sizeof(float)));
 
     // Timed run
     auto start = std::chrono::high_resolution_clock::now();
-    err = bpdn::solveBPDNBatch(batch, params, 0);
-    cudaDeviceSynchronize();
+    CUDA_OK(bpdn::solveBPDNBatch(batch, params, 0));
+    CUDA_OK(cudaDeviceSynchronize());
     auto end = std::chrono::high_resolution_clock::now();
-
-    if (err != cudaSuccess) {
-        std::cerr << "Failed to solve: " << cudaGetErrorString(err) << "\n";
-        bpdn::freeBPDNBatch(batch);
-        return false;
-    }
 
     double elapsed = std::chrono::duration<double, std::milli>(end - start).count();
 
     // Copy results
     std::vector<float> x_sol(numProblems * n);
     std::vector<bpdn::BPDNInfo> infos(numProblems);
-    err = bpdn::copyToHost(batch, x_sol.data(), infos.data(), 0);
-    cudaDeviceSynchronize();
-
-    bpdn::freeBPDNBatch(batch);
+    CUDA_OK(bpdn::copyToHost(batch, x_sol.data(), infos.data(), 0));
+    CUDA_OK(cudaDeviceSynchronize());
 
     // Compute statistics
     int numConverged = 0;
@@ -406,19 +357,15 @@ bool testPerformance() {
     std::cout << "  Time per problem: " << (elapsed / numProblems) << " ms\n";
 
     // Pass if most problems converge within reasonable time
-    bool pass = (numConverged >= 0.7 * numProblems) && (elapsed < 120000);
-    std::cout << "  Result: " << (pass ? "PASS" : "FAIL") << "\n\n";
-
-    return pass;
+    EXPECT_GE(numConverged, 0.7 * numProblems);
+    EXPECT_LT(elapsed, 120000.0);
 }
 
-int main() {
-    std::cout << "========================================\n";
-    std::cout << "CUDA BPDN Implementation Tests\n";
-    std::cout << "========================================\n\n";
+int main(int argc, char** argv) {
+    ::testing::InitGoogleTest(&argc, argv);
 
     // Check CUDA device
-    int deviceCount;
+    int deviceCount = 0;
     cudaGetDeviceCount(&deviceCount);
     if (deviceCount == 0) {
         std::cerr << "No CUDA devices found!\n";
@@ -431,21 +378,5 @@ int main() {
     std::cout << "Compute capability: " << props.major << "." << props.minor << "\n";
     std::cout << "Shared memory per block: " << props.sharedMemPerBlock << " bytes\n\n";
 
-    int passed = 0;
-    int total = 0;
-
-    total++;
-    if (testSingleProblem()) passed++;
-
-    total++;
-    if (testBatch()) passed++;
-
-    total++;
-    if (testPerformance()) passed++;
-
-    std::cout << "========================================\n";
-    std::cout << "Results: " << passed << "/" << total << " tests passed\n";
-    std::cout << "========================================\n";
-
-    return (passed == total) ? 0 : 1;
+    return RUN_ALL_TESTS();
 }
