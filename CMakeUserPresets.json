@@ -2,34 +2,40 @@
     "version": 3,
     "configurePresets": [
         {
-            "name": "debug-local",
-            "displayName": "Local Debug Build",
-            "description": "Local debug build with custom settings",
-            "inherits": "debug",
+            "name": "local",
+            "displayName": "Local Multi-Config Build",
+            "description": "Local multi-config build with custom settings",
+            "inherits": "default",
+            "binaryDir": "${sourceDir}/build-local",
             "cacheVariables": {
-                "CMAKE_VERBOSE_MAKEFILE": "ON"
-            }
-        },
-        {
-            "name": "release-local",
-            "displayName": "Local Release Build",
-            "description": "Local release build with custom settings",
-            "inherits": "release",
-            "cacheVariables": {
+                "CMAKE_VERBOSE_MAKEFILE": "ON",
                 "CMAKE_CUDA_FLAGS_RELEASE": "-O3 -DNDEBUG"
             }
         }
     ],
     "buildPresets": [
         {
+            "name": "all-local",
+            "displayName": "Local All Configurations",
+            "configurePreset": "local"
+        },
+        {
             "name": "debug-local",
             "displayName": "Local Debug Build",
-            "configurePreset": "debug-local"
+            "configurePreset": "local",
+            "configuration": "Debug"
         },
         {
             "name": "release-local",
             "displayName": "Local Release Build",
-            "configurePreset": "release-local"
+            "configurePreset": "local",
+            "configuration": "Release"
+        },
+        {
+            "name": "relwithdebinfo-local",
+            "displayName": "Local RelWithDebInfo Build",
+            "configurePreset": "local",
+            "configuration": "RelWithDebInfo"
         }
     ]
 }

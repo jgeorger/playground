@@ -17,13 +17,13 @@ pipeline {
     stages {
         stage('Configure') {
             steps {
-                sh 'cmake --preset release'
+                sh 'cmake --preset default'
             }
         }
 
         stage('Build') {
             steps {
-                sh 'cmake --build --preset release'
+                sh 'cmake --build --preset all'
             }
         }
 
@@ -39,12 +39,12 @@ pipeline {
                     // catchError lets every test run even if an earlier one fails
                     gtests.each { t ->
                         catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-                            sh "./build/release/${t} --gtest_output=xml:test-results/${t}.xml"
+                            sh "./build/Release/${t} --gtest_output=xml:test-results/${t}.xml"
                         }
                     }
                     plainTests.each { t ->
                         catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
-                            sh "./build/release/${t}"
+                            sh "./build/Release/${t}"
                         }
                     }
                 }

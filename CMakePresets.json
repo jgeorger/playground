@@ -2,50 +2,64 @@
     "version": 3,
     "configurePresets": [
         {
-            "name": "debug",
-            "displayName": "Debug Build",
-            "description": "Debug build with optimization disabled",
-            "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build/debug",
+            "name": "default",
+            "displayName": "Ninja Multi-Config",
+            "description": "Single build tree producing Release, Debug, and RelWithDebInfo configurations",
+            "generator": "Ninja Multi-Config",
+            "binaryDir": "${sourceDir}/build",
             "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Debug",
-                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
-            }
-        },
-        {
-            "name": "release",
-            "displayName": "Release Build",
-            "description": "Release build with optimizations enabled",
-            "generator": "Ninja",
-            "binaryDir": "${sourceDir}/build/release",
-            "cacheVariables": {
-                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_CONFIGURATION_TYPES": "Release;Debug;RelWithDebInfo",
+                "CMAKE_DEFAULT_BUILD_TYPE": "Release",
+                "CMAKE_CROSS_CONFIGS": "all",
+                "CMAKE_DEFAULT_CONFIGS": "all",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
             }
         }
     ],
     "buildPresets": [
         {
-            "name": "debug",
-            "displayName": "Debug Build",
-            "configurePreset": "debug"
+            "name": "all",
+            "displayName": "All Configurations",
+            "description": "Build Release, Debug, and RelWithDebInfo",
+            "configurePreset": "default"
         },
         {
             "name": "release",
             "displayName": "Release Build",
-            "configurePreset": "release"
+            "configurePreset": "default",
+            "configuration": "Release"
+        },
+        {
+            "name": "debug",
+            "displayName": "Debug Build",
+            "configurePreset": "default",
+            "configuration": "Debug"
+        },
+        {
+            "name": "relwithdebinfo",
+            "displayName": "RelWithDebInfo Build",
+            "configurePreset": "default",
+            "configuration": "RelWithDebInfo"
         }
     ],
     "testPresets": [
         {
-            "name": "debug",
-            "displayName": "Debug Tests",
-            "configurePreset": "debug"
-        },
-        {
             "name": "release",
             "displayName": "Release Tests",
-            "configurePreset": "release"
+            "configurePreset": "default",
+            "configuration": "Release"
+        },
+        {
+            "name": "debug",
+            "displayName": "Debug Tests",
+            "configurePreset": "default",
+            "configuration": "Debug"
+        },
+        {
+            "name": "relwithdebinfo",
+            "displayName": "RelWithDebInfo Tests",
+            "configurePreset": "default",
+            "configuration": "RelWithDebInfo"
         }
     ]
 }

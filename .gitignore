@@ -1,2 +1,3 @@
 build/**
 cgemm_benchmark_*.csv
+build-local/**
