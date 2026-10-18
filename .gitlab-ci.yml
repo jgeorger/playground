@@ -1,0 +1,50 @@
+# Needs a runner with the CUDA toolkit, CMake 3.28+, Ninja, a GPU, and MathDx
+# at the path hard-coded in CMakeLists.txt. Register a shell-executor runner on
+# the GPU host with the "cuda" tag.
+#
+# Each configuration runs as its own job using the presets in CMakePresets.json:
+#   configure: cmake --preset default        (Ninja Multi-Config)
+#   build:     cmake --build --preset <cfg>
+#   test:      ctest --preset <cfg>
+
+default:
+  tags: [cuda]
+  timeout: 60 minutes
+  before_script:
+    - export PATH="/usr/local/cuda/bin:$PATH"
+
+stages:
+  - build-test
+
+.cmake_preset:
+  stage: build-test
+  script:
+    - rm -rf test-results && mkdir -p test-results
+    - cmake --preset default
+    - cmake --build --preset "$PRESET"
+    - ctest --preset "$PRESET" --output-on-failure --output-junit "$CI_PROJECT_DIR/test-results/ctest-$PRESET.xml"
+    # Plain executable not registered with CTest; returns nonzero on failure
+    - ./build/$CONFIG/test_linear_solve_dx
+  artifacts:
+    when: always
+    expire_in: 1 week
+    reports:
+      junit: test-results/*.xml
+
+release:
+  extends: .cmake_preset
+  variables:
+    PRESET: release
+    CONFIG: Release
+
+debug:
+  extends: .cmake_preset
+  variables:
+    PRESET: debug
+    CONFIG: Debug
+
+relwithdebinfo:
+  extends: .cmake_preset
+  variables:
+    PRESET: relwithdebinfo
+    CONFIG: RelWithDebInfo
