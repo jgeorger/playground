@@ -81,7 +81,7 @@ set_property(TARGET test_bpdn PROPERTY CUDA_SEPARABLE_COMPILATION ON)
 
 # MathDx linear solve (cuBLASDx + cuSOLVERDx)
 find_package(mathdx REQUIRED CONFIG
-    PATHS "/home/jgeorger/Downloads/nvidia-mathdx-25.12.1-cuda13/nvidia/mathdx/25.12")
+    PATHS "/opt/nvidia/mathdx/25.12")
 
 add_library(linear_solve_dx_lib linear_solve_dx.cu)
 target_link_libraries(linear_solve_dx_lib CUDA::cudart mathdx::cublasdx mathdx::cusolverdx_fatbin)
