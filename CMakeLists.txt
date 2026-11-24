@@ -130,3 +130,7 @@ add_test(NAME IdentityBatchedTests COMMAND test_identity_batched)
 
 add_executable(benchmark_identity_batched benchmark_identity_batched.cu)
 target_link_libraries(benchmark_identity_batched identity_batched_lib CUDA::cudart)
+
+# CA-CFAR vs OS-CFAR (median) benchmark
+add_executable(benchmark_cfar benchmark_cfar.cu)
+target_link_libraries(benchmark_cfar CUDA::cudart)

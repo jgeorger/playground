@@ -34,6 +34,7 @@ rm -rf build/
 - `segment_merger.h`: Header file with function declarations
 - `test_segment_merger.cu`: GoogleTest-based unit test suite
 - `benchmark_segment_merger.cu`: Performance benchmark program
+- `benchmark_cfar.cu`: CA-CFAR vs OS-CFAR benchmark, multi-beam 1D; OS rank auto-matched to CA false-alarm rate (`--beams --samples --ref --guard --iters --alpha --os-rank --no-verify`)
 - `CMakeLists.txt`: CMake build configuration
 - `CMakePresets.json`: Ninja Multi-Config preset (`default`) with build/test presets for release, debug, relwithdebinfo (plus `all` build preset)
 - `CMakeUserPresets.json`: User-specific build configurations
